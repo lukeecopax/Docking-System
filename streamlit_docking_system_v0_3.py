@@ -489,7 +489,7 @@ if report_choice == "Individual Performance":
         default_index = 0  # fallback to the first driver if not found
 
     # Create the selectbox with the default index
-    driver = st.selectbox("Select Driver:", valid_drivers, index=default_index)
+    driver = st.selectbox("Name:", valid_drivers, index=default_index)
     start_date = st.date_input("Start Date:", datetime(2024, 1, 1))
     end_date = st.date_input("End Date:", datetime(2024, 12, 31))
     start_date_str = start_date.strftime("%Y-%m-%d")
