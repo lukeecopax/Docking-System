@@ -234,10 +234,10 @@ df_clean["is_team"] = ~df_clean["is_solo"]
 # Sidebar and UI Setup
 ##################################
 
-st.title("Pando Docking Performance Reports v0.8")
+st.title("Pando Docking Performance Reports v0.9")
 st.markdown(
     """
-    **Latest Update:** *February 14, 2025*  
+    **Latest Update:** *March 5, 2025*  
     - Improved individual and team performance reports  
     - Fixed string concatenation issues in performance metrics  
     - Added collaborator analysis feature  
