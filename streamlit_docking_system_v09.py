@@ -1,4 +1,7 @@
-### This version removes username and password
+# Added new Performance Rankings report to view all individuals ranked by load type
+# Enhanced Individual Performance with detailed "Show All Loads" feature including duration comparisons
+# Expanded Team Performance report to support all load types instead of just "Import 40"
+
 
 import streamlit as st
 import warnings
@@ -234,18 +237,18 @@ df_clean["is_team"] = ~df_clean["is_solo"]
 # Sidebar and UI Setup
 ##################################
 
-st.title("Pando Docking Performance Reports v0.9")
+st.title("Pando Docking Performance Reports v1.0")
 st.markdown(
     """
-    **Latest Update:** *March 5, 2025*  
-    - Improved individual and team performance reports  
-    - Fixed string concatenation issues in performance metrics  
-    - Added collaborator analysis feature  
+    **Latest Update:** *March 14, 2025*  
+    - Added new Performance Rankings report to view all individuals ranked by load type
+    - Enhanced Individual Performance with detailed "Show All Loads" feature including duration comparisons
+    - Expanded Team Performance report to support all load types instead of just "Import 40"
     """
 )
 
 # Report type selection remains as before
-report_choice = st.sidebar.selectbox("Select Report Type:", ["Individual Performance", "Team Performance"])
+report_choice = st.sidebar.selectbox("Select Report Type:", ["Individual Performance", "Team Performance", "Performance Rankings"], index=2)
 
 # Global Date Range Selection (inserted in the sidebar)
 date_range_option = st.sidebar.selectbox(
@@ -868,12 +871,62 @@ if report_choice == "Individual Performance":
    
     st.markdown(collab_html, unsafe_allow_html=True)
 
+    # Add toggle to show all loads
+    show_all_loads = st.checkbox("Show All Loads Completed by This Individual")
+
+    if show_all_loads:
+        st.subheader(f"All Loads Completed by {driver}")
+        
+        # Get all loads where this person was involved
+        all_individual_loads = date_filtered_df[
+            (date_filtered_df["Driver"] == driver) | 
+            (date_filtered_df["Loader 1"] == driver) | 
+            (date_filtered_df["Loader 2"] == driver)
+        ].copy()
+        
+        if not all_individual_loads.empty:
+            # Calculate comparison metrics
+            all_individual_loads["vs_target"] = all_individual_loads["Actual Duration"] - all_individual_loads["Target Minutes"]
+            
+            # Calculate avg for each load type to compare
+            load_type_avgs = date_filtered_df.groupby("Load Type")["Actual Duration"].mean().to_dict()
+            all_individual_loads["load_type_avg"] = all_individual_loads["Load Type"].map(load_type_avgs)
+            all_individual_loads["vs_avg"] = all_individual_loads["Actual Duration"] - all_individual_loads["load_type_avg"]
+            
+            # Format dates and determine role
+            all_individual_loads["Day"] = all_individual_loads["Day Archive"].dt.strftime("%Y-%m-%d")
+            all_individual_loads["Role"] = "Unknown"
+            all_individual_loads.loc[all_individual_loads["Driver"] == driver, "Role"] = "Driver"
+            all_individual_loads.loc[all_individual_loads["Loader 1"] == driver, "Role"] = "Loader 1"
+            all_individual_loads.loc[all_individual_loads["Loader 2"] == driver, "Role"] = "Loader 2"
+            
+            # Select and rename columns for display
+            display_df = all_individual_loads[["Day", "Role", "Load Type", "Actual Duration", "Target Minutes", "vs_target", "vs_avg"]].copy()
+            display_df.columns = ["Date", "Role", "Load Type", "Actual Duration (min)", "Target (min)", "vs Target (min)", "vs Avg (min)"]
+            
+            # Sort by date, most recent first
+            display_df = display_df.sort_values("Date", ascending=False)
+            
+            # Display the data
+            st.dataframe(display_df,width=900, height=500)
+        else:
+            st.write("No loads found for this individual in the selected date range.")
+
 ##################################
 # Team Performance Report Section
 ##################################
+# Team Performance Report Section - Fixed
+# Fixed Rankings Dashboard Section - Aggregation Function
 elif report_choice == "Team Performance":
     st.header("Team Performance Report")
-    load_type_filter = st.selectbox("Select Load Type:", ["Import 40"])
+    
+    # Create date_filtered_df in Team Performance section
+    df = df_clean.copy()
+    date_filtered_df = df[(df["Day Archive"] >= pd.to_datetime(start_date)) & (df["Day Archive"] <= pd.to_datetime(end_date))]
+    
+    # Use all load types from the data instead of just "Import 40"
+    load_type_filter = st.selectbox("Select Load Type:", sorted(df_clean["Load Type"].dropna().unique()))
+    
     min_loads = st.number_input("Minimum Loads Required:", min_value=0, max_value=50, value=10)
    
     team_report_html = generate_team_report(load_type_filter=load_type_filter, min_loads=min_loads, valid_drivers=valid_drivers)
@@ -891,3 +944,57 @@ elif report_choice == "Team Performance":
     </html>
     """
     components.html(full_html, height=3200, scrolling=False)
+
+##################################
+# Performance Rankings Section
+##################################
+elif report_choice == "Performance Rankings":
+    st.header("Performance Rankings by Load Type")
+    st.markdown("Showing all individuals ranked from fastest to slowest for each load type")
+
+    # Create date_filtered_df for this section
+    df = df_clean.copy()
+    date_filtered_df = df[(df["Day Archive"] >= pd.to_datetime(start_date)) & (df["Day Archive"] <= pd.to_datetime(end_date))]
+    
+    # Add min loads parameter
+    min_loads_ranking = st.number_input("Minimum Loads Required for Ranking:", min_value=1, max_value=100, value=3)
+    
+    # Get unique load types
+    unique_load_types = sorted(date_filtered_df["Load Type"].dropna().unique())
+
+    for load_type in unique_load_types:
+        with st.expander(f"Rankings for {load_type}", expanded=True):
+            # Filter for this load type
+            load_df = date_filtered_df[date_filtered_df["Load Type"] == load_type]
+            
+            # Process all individuals whether they were Driver, Loader1, or Loader2
+            melted = load_df.melt(id_vars=[col for col in load_df.columns if col not in ["Driver", "Loader 1", "Loader 2"]],
+                                  value_vars=["Driver", "Loader 1", "Loader 2"],
+                                  value_name="Person")
+            melted["Person"] = melted["Person"].astype(str).str.strip()
+            melted = melted[melted["Person"].isin(valid_drivers)]
+            
+            # Calculate target difference before grouping
+            melted["diff_vs_target"] = melted["Actual Duration"] - melted["Target Minutes"]
+            
+            # Group by person with corrected aggregation
+            person_stats = melted.groupby("Person").agg(
+                avg_duration=("Actual Duration", "mean"),
+                vs_target=("diff_vs_target", "mean"),
+                load_count=("Actual Duration", "count")
+            ).reset_index()
+            
+            # Only include persons with minimum loads - use the parameter
+            person_stats = person_stats[person_stats["load_count"] >= min_loads_ranking]
+            
+            # Sort by average duration (fastest first)
+            person_stats = person_stats.sort_values("avg_duration")
+            
+            if not person_stats.empty:
+                # Display as a dataframe
+                person_stats["avg_duration"] = person_stats["avg_duration"].round(1).astype(str) + " min"
+                person_stats["vs_target"] = person_stats["vs_target"].round(1).astype(str) + " min"
+                person_stats.columns = ["Person", "Average Duration", "vs Target", "Load Count"]
+                st.dataframe(person_stats)
+            else:
+                st.write(f"No individuals have at least {min_loads_ranking} loads for this load type.")
