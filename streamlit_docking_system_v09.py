@@ -237,11 +237,12 @@ df_clean["is_team"] = ~df_clean["is_solo"]
 # Sidebar and UI Setup
 ##################################
 
-st.title("Pando Docking Performance Reports v1.1")
+st.title("Pando Docking Performance Reports v1.2")
 st.markdown(
     """
     **Latest Update:** *May 20, 2025*  
-    - Added new Team Averages vs Goals report to compare team-wide averages to goals for each load type
+    - Enhanced Team Averages vs Goals report with improved summary display
+    - Fixed Year to Date functionality
     """
 )
 
@@ -260,9 +261,12 @@ report_choice = st.sidebar.selectbox(
 # Global Date Range Selection (inserted in the sidebar)
 date_range_option = st.sidebar.selectbox(
     "Select Date Range Option",
-    ["This Month", "Year 2024", "Year 2025", "Last Month", "Custom"],
+    ["This Month", "Year to Date", "Year 2024", "Year 2025", "Last Month", "Custom"],
     index=0  # default is "This Month"
 )
+
+today = datetime.today()
+current_year = today.year
 
 if date_range_option == "Custom":
     start_date = st.sidebar.date_input("Start Date:", datetime(2025, 1, 1))
@@ -273,15 +277,16 @@ elif date_range_option == "Year 2024":
 elif date_range_option == "Year 2025":
     start_date = datetime(2025, 1, 1)
     end_date = datetime(2025, 12, 31)
+elif date_range_option == "Year to Date":
+    start_date = datetime(current_year, 1, 1)
+    end_date = today
 elif date_range_option == "Last Month":
-    today = datetime.today()
     first_of_current = today.replace(day=1)
     last_month_end = first_of_current - timedelta(days=1)
     last_month_start = last_month_end.replace(day=1)
     start_date = last_month_start
     end_date = last_month_end
 elif date_range_option == "This Month":
-    today = datetime.today()
     start_date = today.replace(day=1)
     last_day = calendar.monthrange(today.year, today.month)[1]
     end_date = today.replace(day=last_day)
@@ -1013,7 +1018,8 @@ elif report_choice == "Team Averages vs Goals":
     st.header("Team Averages vs Goals Report")
     st.markdown(
         """
-        This report shows, for each load type, the average duration across all team members compared to the target goal.
+        This report provides an overview of team performance for each load type, comparing average completion times 
+        to target goals. This information can be posted for the team to see collective performance without singling out individuals.
         """
     )
 
@@ -1032,15 +1038,75 @@ elif report_choice == "Team Averages vs Goals":
 
     # Merge with target goals
     team_avg_by_load = team_avg_by_load.merge(
-        date_filtered_df[["Load Type", "Target Minutes"]].drop_duplicates(),
+        date_filtered_df[["Load Type", "Target Minutes"]].dropna().drop_duplicates(),
         on="Load Type", how="left"
     )
 
     # Calculate differences and percentages
     team_avg_by_load["diff_vs_target"] = team_avg_by_load["avg_duration"] - team_avg_by_load["Target Minutes"]
     team_avg_by_load["percent_of_target"] = (team_avg_by_load["avg_duration"] / team_avg_by_load["Target Minutes"]) * 100
+    
+    # Sort by load count (most common first)
+    team_avg_by_load = team_avg_by_load.sort_values("load_count", ascending=False)
 
-    # Color coding for performance
+    # Create a summary card for posting
+    st.subheader("Pando Shipping Team Performance Summary")
+    st.markdown(f"**Date Range: {start_date_str} to {end_date_str}**")
+    
+    # Use Streamlit's native components instead of complex HTML
+    st.markdown("### Team Performance Summary", unsafe_allow_html=True)
+    
+    # Create a styled DataFrame to display instead of custom HTML
+    performance_df = team_avg_by_load.copy()
+    performance_df['Status'] = performance_df.apply(
+        lambda row: "✅ Under Goal" if row["diff_vs_target"] < 0 else 
+                  "⚠️ Near Goal" if row["diff_vs_target"] < 0.15 * row["Target Minutes"] else 
+                  "❌ Over Goal", 
+        axis=1
+    )
+    
+    # Format the display columns for better readability
+    display_df = performance_df.copy()
+    display_df["Completed"] = display_df["load_count"].astype(int)
+    display_df["Avg Time"] = display_df["avg_duration"].map("{:.1f} min".format)
+    display_df["Goal"] = display_df["Target Minutes"].map("{:.1f} min".format)
+    display_df["vs Goal"] = display_df["diff_vs_target"].map("{:+.1f} min".format)
+    
+    # Select and reorder columns for display
+    display_df = display_df[["Load Type", "Completed", "Avg Time", "Goal", "vs Goal", "Status"]]
+    
+    # Display the DataFrame with styling
+    st.dataframe(
+        display_df,
+        column_config={
+            "Load Type": st.column_config.TextColumn("Load Type", width="medium"),
+            "Completed": st.column_config.NumberColumn("Completed", width="small"),
+            "Avg Time": st.column_config.TextColumn("Avg Time", width="small"),
+            "Goal": st.column_config.TextColumn("Goal", width="small"),
+            "vs Goal": st.column_config.TextColumn("vs Goal", width="small"),
+            "Status": st.column_config.TextColumn("Status", width="medium")
+        },
+        use_container_width=True
+    )
+    
+    # Add a simple legend
+    st.markdown("""
+    **Legend:**
+    - ✅ **Under Goal**: Performance is better than target (negative values)
+    - ⚠️ **Near Goal**: Performance is slightly above target (within 15%)
+    - ❌ **Over Goal**: Performance is significantly above target (more than 15%)
+    """)
+    
+    # Add a download button for the summary
+    csv_data = team_avg_by_load.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="Download Summary as CSV",
+        data=csv_data,
+        file_name=f"pando_team_performance_{start_date_str}_to_{end_date_str}.csv",
+        mime='text/csv',
+    )
+
+    # Color coding for performance in detailed table
     def perf_color(diff, target):
         if pd.isna(diff) or pd.isna(target):
             return ""
@@ -1063,7 +1129,7 @@ elif report_choice == "Team Averages vs Goals":
         "percent_of_target": "{:.0f}%"
     })
 
-    st.markdown("<h3>Summary Table</h3>", unsafe_allow_html=True)
+    st.markdown("<h3>Detailed Performance Table</h3>", unsafe_allow_html=True)
     st.dataframe(styled_table, use_container_width=True)
 
     # Bar chart: Average Duration vs Target
@@ -1072,10 +1138,23 @@ elif report_choice == "Team Averages vs Goals":
     x = team_avg_by_load["Load Type"]
     avg = team_avg_by_load["avg_duration"]
     target = team_avg_by_load["Target Minutes"]
+    diff = team_avg_by_load["diff_vs_target"]
+    
+    # Create an improved bar chart showing actual time, target, and difference
     bar_width = 0.35
     x_pos = np.arange(len(x))
-    ax.bar(x_pos - bar_width/2, avg, width=bar_width, color="#086ccc", label="Team Avg")
-    ax.bar(x_pos + bar_width/2, target, width=bar_width, color="#4CAF50", label="Target")
+    
+    bars1 = ax.bar(x_pos - bar_width/2, avg, width=bar_width, color="#086ccc", label="Team Avg")
+    bars2 = ax.bar(x_pos + bar_width/2, target, width=bar_width, color="#4CAF50", label="Target")
+    
+    # Add data labels showing the difference
+    for i, (bar1, d) in enumerate(zip(bars1, diff)):
+        label_color = 'green' if d < 0 else 'red'
+        ax.text(i - bar_width/2, bar1.get_height() + 1, 
+                f"{d:+.1f}", 
+                ha='center', va='bottom', 
+                color=label_color, fontweight='bold')
+    
     ax.set_xticks(x_pos)
     ax.set_xticklabels(x, rotation=45, ha="right")
     ax.set_ylabel("Minutes")
