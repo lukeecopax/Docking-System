@@ -226,8 +226,8 @@ df_clean["Day Archive"] = pd.to_datetime(df_clean["Day Archive"], errors="coerce
 df_clean["Actual Duration"] = pd.to_numeric(df_clean["Actual Duration"], errors="coerce")
 
 # Standardize text fields for loaders
-df_clean["Loader 1"] = df_clean["Loader 1"].astype(str).str.strip()
-df_clean["Loader 2"] = df_clean["Loader 2"].astype(str).str.strip()
+df_clean["Loader 1"] = df_clean["Loader 1"].fillna("").astype(str).str.strip()
+df_clean["Loader 2"] = df_clean["Loader 2"].fillna("").astype(str).str.strip()
 
 # Create role flag columns: is_solo and is_team
 df_clean["is_solo"] = ((df_clean["Loader 1"].isin(["", "nan", "None"])) & (df_clean["Loader 2"].isin(["", "nan", "None"])))
@@ -237,18 +237,25 @@ df_clean["is_team"] = ~df_clean["is_solo"]
 # Sidebar and UI Setup
 ##################################
 
-st.title("Pando Docking Performance Reports v1.0")
+st.title("Pando Docking Performance Reports v1.1")
 st.markdown(
     """
-    **Latest Update:** *March 14, 2025*  
-    - Added new Performance Rankings report to view all individuals ranked by load type
-    - Enhanced Individual Performance with detailed "Show All Loads" feature including duration comparisons
-    - Expanded Team Performance report to support all load types instead of just "Import 40"
+    **Latest Update:** *May 20, 2025*  
+    - Added new Team Averages vs Goals report to compare team-wide averages to goals for each load type
     """
 )
 
 # Report type selection remains as before
-report_choice = st.sidebar.selectbox("Select Report Type:", ["Individual Performance", "Team Performance", "Performance Rankings"], index=2)
+report_choice = st.sidebar.selectbox(
+    "Select Report Type:",
+    [
+        "Individual Performance",
+        "Team Performance",
+        "Performance Rankings",
+        "Team Averages vs Goals"
+    ],
+    index=2
+)
 
 # Global Date Range Selection (inserted in the sidebar)
 date_range_option = st.sidebar.selectbox(
@@ -998,3 +1005,81 @@ elif report_choice == "Performance Rankings":
                 st.dataframe(person_stats)
             else:
                 st.write(f"No individuals have at least {min_loads_ranking} loads for this load type.")
+
+##################################
+# Team Averages vs Goals Section
+##################################
+elif report_choice == "Team Averages vs Goals":
+    st.header("Team Averages vs Goals Report")
+    st.markdown(
+        """
+        This report shows, for each load type, the average duration across all team members compared to the target goal.
+        """
+    )
+
+    # Filter data by date range
+    df = df_clean.copy()
+    date_filtered_df = df[(df["Day Archive"] >= pd.to_datetime(start_date)) & (df["Day Archive"] <= pd.to_datetime(end_date))]
+
+    # Group by load type and calculate stats
+    team_avg_by_load = date_filtered_df.groupby("Load Type").agg(
+        avg_duration=("Actual Duration", "mean"),
+        min_duration=("Actual Duration", "min"),
+        max_duration=("Actual Duration", "max"),
+        median_duration=("Actual Duration", "median"),
+        load_count=("Actual Duration", "count")
+    ).reset_index()
+
+    # Merge with target goals
+    team_avg_by_load = team_avg_by_load.merge(
+        date_filtered_df[["Load Type", "Target Minutes"]].drop_duplicates(),
+        on="Load Type", how="left"
+    )
+
+    # Calculate differences and percentages
+    team_avg_by_load["diff_vs_target"] = team_avg_by_load["avg_duration"] - team_avg_by_load["Target Minutes"]
+    team_avg_by_load["percent_of_target"] = (team_avg_by_load["avg_duration"] / team_avg_by_load["Target Minutes"]) * 100
+
+    # Color coding for performance
+    def perf_color(diff, target):
+        if pd.isna(diff) or pd.isna(target):
+            return ""
+        if diff < 0:
+            return "background-color: #d4edda;"  # green
+        elif diff < 0.15 * target:
+            return "background-color: #fff3cd;"  # yellow
+        else:
+            return "background-color: #f8d7da;"  # red
+
+    styled_table = team_avg_by_load.style.apply(
+        lambda row: [perf_color(row["diff_vs_target"], row["Target Minutes"])] * len(row), axis=1
+    ).format({
+        "avg_duration": "{:.1f} min",
+        "min_duration": "{:.1f} min",
+        "max_duration": "{:.1f} min",
+        "median_duration": "{:.1f} min",
+        "Target Minutes": "{:.1f} min",
+        "diff_vs_target": "{:+.1f} min",
+        "percent_of_target": "{:.0f}%"
+    })
+
+    st.markdown("<h3>Summary Table</h3>", unsafe_allow_html=True)
+    st.dataframe(styled_table, use_container_width=True)
+
+    # Bar chart: Average Duration vs Target
+    st.markdown("<h3>Average Duration vs Target by Load Type</h3>", unsafe_allow_html=True)
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=80)
+    x = team_avg_by_load["Load Type"]
+    avg = team_avg_by_load["avg_duration"]
+    target = team_avg_by_load["Target Minutes"]
+    bar_width = 0.35
+    x_pos = np.arange(len(x))
+    ax.bar(x_pos - bar_width/2, avg, width=bar_width, color="#086ccc", label="Team Avg")
+    ax.bar(x_pos + bar_width/2, target, width=bar_width, color="#4CAF50", label="Target")
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(x, rotation=45, ha="right")
+    ax.set_ylabel("Minutes")
+    ax.set_title("Team Average Duration vs Target by Load Type")
+    ax.legend()
+    plt.tight_layout()
+    st.pyplot(fig)
