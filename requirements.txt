@@ -1,7 +1,6 @@
-streamlit>=1.42.0
-requests>=2.28.2
-pandas>=1.5.3
-numpy>=1.24.2
-openpyxl
-matplotlib
-Office365-REST-Python-Client
+pandas>=2.2
+openpyxl>=3.1
+numpy>=1.26
+matplotlib>=3.8
+office365-rest-python-client>=2.5.18
+requests>=2.31
