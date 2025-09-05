@@ -15,6 +15,10 @@ from io import BytesIO
 import logging
 from office365.runtime.auth.authentication_context import AuthenticationContext
 from office365.sharepoint.client_context import ClientContext
+import os, zipfile
+from pathlib import Path
+from office365.runtime.auth.user_credential import UserCredential
+
 import calendar
 from datetime import timedelta
 
@@ -26,38 +30,73 @@ warnings.filterwarnings("ignore", message="Data Validation extension is not supp
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 ##################################
-# Part 1: Download Files
+# Part 1: Download Files (robust)
 ##################################
+def _assert_valid_excel(path: Path, label: str):
+    if not path.exists():
+        st.error(f"{label} not found after download.")
+        st.stop()
+    size = path.stat().st_size
+    if size < 2048:  # <2 KB is almost certainly an error page / empty
+        logging.error("%s looks too small: %s bytes", label, size)
+        st.error(f"{label} looks invalid (too small). Check permissions/share link.")
+        st.stop()
+    if not zipfile.is_zipfile(path):
+        logging.error("%s is not a zip (first bytes likely HTML).", label)
+        st.error(
+            f"{label} is not a valid Excel file. "
+            "This usually means the download returned an HTML error page (auth/404). "
+            "Verify SharePoint credentials, file path, and access policy (no MFA)."
+        )
+        st.stop()
+
 def download_files():
-    # --- Download 2025 Active File via SharePoint ---
+    base_dir = Path("/tmp")  # safe, writable in Streamlit Cloud
+    p2025 = base_dir / "Docking System - Pando 2025.xlsm"
+    p2024 = base_dir / "Docking System - Pando (V5).xlsx"
+
+    # --- Download 2025 Active File via SharePoint (modern method) ---
     site_url = st.secrets["sharepoint"]["site_url"]
     username = st.secrets["sharepoint"]["username"]
     password = st.secrets["sharepoint"]["password"]
-    
-    ctx_auth = AuthenticationContext(site_url)
-    if ctx_auth.acquire_token_for_user(username, password):
-        ctx = ClientContext(site_url, ctx_auth)
-        file_relative_url = "/sites/PandoShipping/Shared Documents/Bethlehem Shipping/Docking System - Pando 2025.xlsm"
-        try:
-            with open("Docking System - Pando 2025.xlsm", "wb") as local_file:
-                file_obj = ctx.web.get_file_by_server_relative_url(file_relative_url)
-                file_obj.download(local_file).execute_query()
-            logging.info("2025 file downloaded successfully!")
-        except Exception as e:
-            logging.error("Error downloading 2025 file: %s", e)
-    else:
-        logging.error("Authentication failed for 2025 file.")
-    
-    # --- Download 2024 Archived File via Direct URL ---
-    direct_download_url = "https://netorg245148-my.sharepoint.com/:x:/g/personal/lhuang_ecopaxinc_com/EdUeZd99AJJFn9GIOYn6s74BxnH194ZxUJq5DfehBlI9EQ?e=TlZyOt&download=1"
-    output_file = "Docking System - Pando (V5).xlsx"
+
+    file_relative_url = "/sites/PandoShipping/Shared Documents/Bethlehem Shipping/Docking System - Pando 2025.xlsm"
     try:
-        response = requests.get(direct_download_url)
-        with open(output_file, "wb") as f:
-            f.write(response.content)
-        logging.info("2024 archived file downloaded successfully!")
+        ctx = ClientContext(site_url).with_credentials(UserCredential(username, password))
+        with p2025.open("wb") as f:
+            ctx.web.get_file_by_server_relative_url(file_relative_url).download(f).execute_query()
+        logging.info("2025 file downloaded: %s bytes", p2025.stat().st_size)
     except Exception as e:
-        logging.error("Error downloading 2024 file: %s", e)
+        logging.exception("Error downloading 2025 file from SharePoint: %s", e)
+        st.error("Failed to download 2025 file from SharePoint. Check credentials/path and tenant policies.")
+        st.stop()
+
+    _assert_valid_excel(p2025, "2025 workbook")
+
+    # --- Download 2024 Archived File via Direct URL ---
+    # NOTE: This must be an *Anyone with the link* sharing URL; otherwise you'll get a login HTML page.
+    direct_download_url = (
+        "https://netorg245148-my.sharepoint.com/:x:/g/personal/"
+        "lhuang_ecopaxinc_com/EdUeZd99AJJFn9GIOYn6s74BxnH194ZxUJq5DfehBlI9EQ?e=TlZyOt&download=1"
+    )
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(direct_download_url, headers=headers, timeout=60, allow_redirects=True)
+        resp.raise_for_status()
+        p2024.write_bytes(resp.content)
+        logging.info("2024 archived file downloaded: %s bytes", p2024.stat().st_size)
+    except Exception as e:
+        logging.exception("Error downloading 2024 file from shared link: %s", e)
+        st.error(
+            "Failed to download 2024 archive from the shared link. "
+            "Make sure the link is set to 'Anyone with the link can view/download'."
+        )
+        st.stop()
+
+    _assert_valid_excel(p2024, "2024 archive")
+
+    return p2024, p2025
+
 
 ##################################
 # Part 2: Helper Functions for Cleaning
@@ -166,21 +205,19 @@ def clean_2025_archive(file_path):
 # Part 4: Clean Both Datasets and Merge
 ##################################
 def clean_and_merge_datasets():
-    # Clean the 2024 and 2025 files
-    archive_2024, individual_2024 = clean_2024_archive("Docking System - Pando (V5).xlsx")
-    archive_2025, individual_2025 = clean_2025_archive("Docking System - Pando 2025.xlsm")
-    
-    # Merge the two archive DataFrames (vertical concatenation)
+    p2024, p2025 = download_files()
+
+    archive_2024, individual_2024 = clean_2024_archive(str(p2024))
+    archive_2025, individual_2025 = clean_2025_archive(str(p2025))
+
     merged_archive = pd.concat([archive_2024, archive_2025], ignore_index=True)
-    
-    # Combine the individual driver lists
     individual_df_combined = pd.concat([individual_2024, individual_2025]).drop_duplicates().reset_index(drop=True)
-    
-    # Clean and standardize driver names
+
     individual_df_combined["Driver Name"] = individual_df_combined["Driver Name"].apply(lambda n: n.strip().title())
     all_individuals = set(individual_df_combined["Driver Name"].unique())
-    
+
     return merged_archive, individual_df_combined, all_individuals
+
 
 ##################################
 # Part 5: Compute Statistics and Available Individuals
@@ -553,7 +590,11 @@ def generate_team_report(load_type_filter="Import 40", min_loads=10, valid_drive
     # In the Team Performance Report Section:
     df_team = df_clean.copy()
     df_team = df_team[df_team["Driver"].notna() & (df_team["Driver"].str.strip() != "")]
-    df_team = df_team[df_team["Loader 1"].notna() | df_team["Loader 2"].notna()]
+    df_team = df_team[
+        (df_team["Loader 1"].fillna("").str.strip() != "") |
+        (df_team["Loader 2"].fillna("").str.strip() != "")
+    ]
+
     # Use the global date range for filtering
     df_team = df_team[(df_team["Day Archive"] >= pd.to_datetime(start_date)) & (df_team["Day Archive"] <= pd.to_datetime(end_date))]
     
@@ -772,7 +813,7 @@ if report_choice == "Individual Performance":
     buf.seek(0)
     st.image(buf, width=1000)
    
-    overall_solo_df = date_filtered_df[df_clean["is_solo"]]
+    overall_solo_df = date_filtered_df[date_filtered_df["is_solo"]]
     solo_df = overall_solo_df[overall_solo_df["Driver"] == driver]
     overall_team_df = date_filtered_df[~df_clean["is_solo"]]
    
